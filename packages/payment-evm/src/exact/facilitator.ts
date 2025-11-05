@@ -5,7 +5,6 @@ import type {
   x402SupportedKind,
 } from "@faremeter/types/x402";
 
-import { isValidationError, caseInsensitiveLiteral } from "@faremeter/types";
 import { isPrivateKey, type ChainInfo } from "@faremeter/types/evm";
 import { type FacilitatorHandler } from "@faremeter/types/facilitator";
 
@@ -36,7 +35,11 @@ import {
   x402ExactPayload,
 } from "./constants";
 
-import { generateDomain, generateForwarderDomain } from "./common";
+import {
+  generateMatcher,
+  generateDomain,
+  generateForwarderDomain,
+} from "./common";
 
 function errorResponse(msg: string): x402SettleResponse {
   return {
@@ -129,14 +132,7 @@ export async function createFacilitatorHandler(
     }
   }
 
-  const checkTuple = type({
-    scheme: caseInsensitiveLiteral(X402_EXACT_SCHEME),
-    network: caseInsensitiveLiteral(network),
-  });
-
-  const checkTupleAndAsset = checkTuple.and({
-    asset: caseInsensitiveLiteral(asset),
-  });
+  const { isMatchingRequirement } = generateMatcher(network, asset);
 
   const getSupported = (): Promise<x402SupportedKind>[] => {
     return [
@@ -151,29 +147,25 @@ export async function createFacilitatorHandler(
   const getRequirements = async (
     req: x402PaymentRequirements[],
   ): Promise<x402PaymentRequirements[]> => {
-    return req
-      .filter((x) => !isValidationError(checkTupleAndAsset(x)))
-      .map((x) => ({
-        ...x,
-        asset,
-        maxTimeoutSeconds: 300,
-        // Provide EIP-712 domain parameters for client signing
-        extra: {
-          name: useForwarder ? assetInfo.forwarderName : assetInfo.contractName,
-          version: useForwarder ? assetInfo.forwarderVersion : "2",
-          chainId,
-          verifyingContract: useForwarder ? assetInfo.forwarder : asset,
-        },
-      }));
+    return req.filter(isMatchingRequirement).map((x) => ({
+      ...x,
+      asset,
+      maxTimeoutSeconds: 300,
+      // Provide EIP-712 domain parameters for client signing
+      extra: {
+        name: useForwarder ? assetInfo.forwarderName : assetInfo.contractName,
+        version: useForwarder ? assetInfo.forwarderVersion : "2",
+        chainId,
+        verifyingContract: useForwarder ? assetInfo.forwarder : asset,
+      },
+    }));
   };
 
   const handleSettle = async (
     requirements: x402PaymentRequirements,
     payment: x402PaymentPayload,
   ): Promise<x402SettleResponse | null> => {
-    const tupleMatches = checkTuple(payment);
-
-    if (isValidationError(tupleMatches)) {
+    if (!isMatchingRequirement(requirements)) {
       return null; // Not for us, let another handler try
     }
 

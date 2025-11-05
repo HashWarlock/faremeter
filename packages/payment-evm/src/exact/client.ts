@@ -14,12 +14,13 @@ import type { Hex } from "viem";
 import { isAddress } from "viem";
 import { type } from "arktype";
 import {
-  X402_EXACT_SCHEME,
   EIP712_TYPES,
   eip712Domain,
   type x402ExactPayload,
   type eip3009Authorization,
 } from "./constants";
+
+import { generateMatcher } from "./common";
 
 interface WalletForPayment {
   chain: {
@@ -54,13 +55,16 @@ export function createPaymentHandler(
     );
   }
 
+  const { isMatchingRequirement } = generateMatcher(
+    x402Network,
+    assetInfo.address,
+  );
+
   return async function handlePayment(
     context: RequestContext,
     accepts: x402PaymentRequirements[],
   ): Promise<PaymentExecer[]> {
-    const compatibleRequirements = accepts.filter(
-      (req) => req.scheme === X402_EXACT_SCHEME && req.network === x402Network,
-    );
+    const compatibleRequirements = accepts.filter(isMatchingRequirement);
 
     return compatibleRequirements.map((requirements) => ({
       requirements,

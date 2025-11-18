@@ -2,6 +2,7 @@ import type {
   x402PaymentRequirements,
   x402PaymentPayload,
   x402SettleResponse,
+  x402VerifyResponse,
   x402SupportedKind,
 } from "@faremeter/types/x402";
 
@@ -40,15 +41,6 @@ import {
   generateDomain,
   generateForwarderDomain,
 } from "./common";
-
-function errorResponse(msg: string): x402SettleResponse {
-  return {
-    success: false,
-    error: msg,
-    txHash: null,
-    networkId: null,
-  };
-}
 
 function parseSignature(signature: string): { v: number; r: Hex; s: Hex } {
   const sig = signature.slice(2); // Remove 0x
@@ -159,13 +151,11 @@ export async function createFacilitatorHandler(
     }));
   };
 
-  const handleSettle = async (
+  const verifyTransaction = async (
     requirements: x402PaymentRequirements,
     payment: x402PaymentPayload,
-  ): Promise<x402SettleResponse | null> => {
-    if (!isMatchingRequirement(requirements)) {
-      return null; // Not for us, let another handler try
-    }
+  ) => {
+    const errorResponse = (error: string) => ({ error });
 
     // For the exact scheme with EIP-3009, validate the authorization payload
     const payloadResult = x402ExactPayload(payment.payload);
@@ -232,7 +222,7 @@ export async function createFacilitatorHandler(
         !assetInfo.forwarderName ||
         !assetInfo.forwarder
       ) {
-        throw new Error("Secondary Forwardign Information Missing");
+        throw new Error("Secondary Forwarding Information Missing");
       }
 
       domain = generateForwarderDomain(chainId, {
@@ -273,6 +263,56 @@ export async function createFacilitatorHandler(
     if (!isValidSignature) {
       return errorResponse("Invalid signature");
     }
+
+    return {
+      authorization,
+      signature,
+      validAfter,
+      validBefore,
+    };
+  };
+
+  const handleVerify = async (
+    requirements: x402PaymentRequirements,
+    payment: x402PaymentPayload,
+  ): Promise<x402VerifyResponse | null> => {
+    if (!isMatchingRequirement(requirements)) {
+      return null; // Not for us, let another handler try
+    }
+
+    const verifyResult = await verifyTransaction(requirements, payment);
+
+    if ("error" in verifyResult) {
+      return { isValid: false, invalidReason: verifyResult.error };
+    }
+
+    return { isValid: true };
+  };
+
+  const handleSettle = async (
+    requirements: x402PaymentRequirements,
+    payment: x402PaymentPayload,
+  ): Promise<x402SettleResponse | null> => {
+    if (!isMatchingRequirement(requirements)) {
+      return null; // Not for us, let another handler try
+    }
+
+    const errorResponse = (msg: string): x402SettleResponse => {
+      return {
+        success: false,
+        error: msg,
+        txHash: null,
+        networkId: null,
+      };
+    };
+
+    const verifyResult = await verifyTransaction(requirements, payment);
+
+    if ("error" in verifyResult) {
+      return errorResponse(verifyResult.error);
+    }
+
+    const { authorization, signature, validAfter, validBefore } = verifyResult;
 
     // Verify contract supports EIP-712
     try {
@@ -347,6 +387,7 @@ export async function createFacilitatorHandler(
   return {
     getSupported,
     getRequirements,
+    handleVerify,
     handleSettle,
   };
 }

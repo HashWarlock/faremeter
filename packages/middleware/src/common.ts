@@ -4,6 +4,8 @@ import {
   type x402PaymentPayload,
   x402PaymentRequiredResponse,
   x402PaymentHeaderToPayload,
+  x402VerifyRequest,
+  x402VerifyResponse,
   x402SettleRequest,
   x402SettleResponse,
 } from "@faremeter/types/x402";
@@ -114,6 +116,12 @@ export type HandleMiddlewareRequestArgs<MiddlewareResponse = unknown> =
       status: PossibleStatusCodes,
       obj: PossibleJSONResponse,
     ) => MiddlewareResponse;
+    body: (context: {
+      paymentRequirements: x402PaymentRequirements;
+      paymentPayload: x402PaymentPayload;
+      settle: () => Promise<MiddlewareResponse | undefined>;
+      verify: () => Promise<MiddlewareResponse | undefined>;
+    }) => Promise<MiddlewareResponse | undefined>;
   };
 
 export async function handleMiddlewareRequest<MiddlewareResponse>(
@@ -136,52 +144,93 @@ export async function handleMiddlewareRequest<MiddlewareResponse>(
     return sendPaymentRequired();
   }
 
-  const payload = x402PaymentHeaderToPayload(paymentHeader);
+  const paymentPayload = x402PaymentHeaderToPayload(paymentHeader);
 
-  if (isValidationError(payload)) {
-    logger.debug(`couldn't validate client payload: ${payload.summary}`);
+  if (isValidationError(paymentPayload)) {
+    logger.debug(`couldn't validate client payload: ${paymentPayload.summary}`);
     return sendPaymentRequired();
   }
 
   const paymentRequirements = findMatchingPaymentRequirements(
     paymentRequiredResponse.accepts,
-    payload,
+    paymentPayload,
   );
 
   if (!paymentRequirements) {
     logger.warning(
       `couldn't find matching payment requirements for payload`,
-      payload,
+      paymentPayload,
     );
     return sendPaymentRequired();
   }
 
-  const settleRequest: x402SettleRequest = {
-    x402Version: 1,
-    paymentHeader,
-    paymentRequirements,
+  const settle = async () => {
+    const settleRequest: x402SettleRequest = {
+      x402Version: 1,
+      paymentHeader,
+      paymentRequirements,
+    };
+
+    const t = await fetch(`${args.facilitatorURL}/settle`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(settleRequest),
+    });
+    const settlementResponse = x402SettleResponse(await t.json());
+
+    if (isValidationError(settlementResponse)) {
+      const msg = `error getting response from facilitator for settlement: ${settlementResponse.summary}`;
+      logger.error(msg);
+      throw new Error(msg);
+    }
+
+    if (!settlementResponse.success) {
+      logger.warning("failed to settle payment: {error}", settlementResponse);
+      return sendPaymentRequired();
+    }
   };
 
-  const t = await fetch(`${args.facilitatorURL}/settle`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(settleRequest),
+  const verify = async () => {
+    const verifyRequest: x402VerifyRequest = {
+      x402Version: 1,
+      paymentHeader,
+      paymentRequirements,
+    };
+
+    const t = await fetch(`${args.facilitatorURL}/verify`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(verifyRequest),
+    });
+    const verifyResponse = x402VerifyResponse(await t.json());
+
+    if (isValidationError(verifyResponse)) {
+      const msg = `error getting response from facilitator for verification: ${verifyResponse.summary}`;
+      logger.error(msg);
+      throw new Error(msg);
+    }
+
+    if (!verifyResponse.isValid) {
+      logger.warning(
+        "failed to settle payment: {invalidReason}",
+        verifyResponse,
+      );
+      return sendPaymentRequired();
+    }
+  };
+
+  return await args.body({
+    paymentRequirements,
+    paymentPayload,
+    settle,
+    verify,
   });
-  const settlementResponse = x402SettleResponse(await t.json());
-
-  if (isValidationError(settlementResponse)) {
-    const msg = `error getting response from facilitator for settlement: ${settlementResponse.summary}`;
-    logger.error(msg);
-    throw new Error(msg);
-  }
-
-  if (!settlementResponse.success) {
-    logger.warning("failed to settle payment: {error}", settlementResponse);
-    return sendPaymentRequired();
-  }
 }
 
 export type createPaymentRequiredResponseCacheOpts = AgedLRUCacheOpts & {

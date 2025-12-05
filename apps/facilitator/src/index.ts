@@ -25,9 +25,9 @@ await configure({
 });
 
 const solanaHandlers =
-  argsFromEnv(["ADMIN_KEYPAIR_PATH"], (...envVars) =>
+  (await argsFromEnv(["ADMIN_KEYPAIR_PATH"], (...envVars) =>
     solana.createHandlers("devnet", ...envVars),
-  ) ?? [];
+  )) ?? [];
 
 const evmHandlers =
   (await argsFromEnv(["EVM_PRIVATE_KEY"], async (privateKey) => [
@@ -39,7 +39,17 @@ const skaleHandlers =
     await createEVMHandler(evmChains.skaleEuropaTestnet, privateKey, "USDC"),
   ])) ?? [];
 
-const handlers = [...solanaHandlers, ...evmHandlers, ...skaleHandlers];
+const monadHandlers =
+  (await argsFromEnv(["EVM_PRIVATE_KEY"], async (privateKey) => [
+    await createEVMHandler(evmChains.monadTestnet, privateKey, "USDC"),
+  ])) ?? [];
+
+const handlers = [
+  ...solanaHandlers,
+  ...evmHandlers,
+  ...skaleHandlers,
+  ...monadHandlers,
+];
 
 if (handlers.length === 0) {
   logger.error(
